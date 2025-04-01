@@ -1,7 +1,7 @@
 import os
 os.environ['KMP_DUPLICATE_LIB_OK']='TRUE'
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('TkAgg')  # 改用TkAgg后端，支持交互式显示
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -20,131 +20,95 @@ from src.models.agent import DQNAgent
 from src.utils.map_loader import load_map_from_image
 from src.config import Config
 
-def load_map_from_image(image_path, target_size=(32, 32)):
-    """从PNG图像加载地图数据，并调整大小到指定尺寸"""
-    try:
-        # 使用PIL库加载图像
-        img = Image.open(image_path)
-        
-        # 调整图像大小
-        img = img.resize(target_size, Image.BILINEAR)
-        
-        # 转换为灰度图像
-        if img.mode != 'L':
-            img = img.convert('L')
-        
-        # 转换为numpy数组
-        map_data = np.array(img)
-        
-        # 二值化处理：小于128的像素(深色)被认为是障碍物(1)，其他为空地(0)
-        map_data = np.where(map_data < 128, 1, 0)
-        
-        print(f"从图像加载地图: {image_path}, 原始形状: (320, 320), 调整后: {map_data.shape}")
-        return map_data
-    except Exception as e:
-        print(f"加载地图图像失败: {e}")
-        return None
+# 设置中文字体
+plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
+plt.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
 
-def get_available_map_images(maps_dir="maps"):
-    """获取maps目录下所有可用的PNG地图图像"""
-    if not os.path.exists(maps_dir):
-        print(f"地图目录 {maps_dir} 不存在，将创建空目录")
-        os.makedirs(maps_dir)
-        return []
-    
-    map_files = glob.glob(os.path.join(maps_dir, "*.png"))
-    return map_files
+class MapLoader:
+    @staticmethod
+    def load_map_from_image(image_path, target_size=(32, 32)):
+        """从PNG图像加载地图数据，并调整大小到指定尺寸"""
+        try:
+            img = Image.open(image_path)
+            img = img.resize(target_size, Image.BILINEAR)
+            if img.mode != 'L':
+                img = img.convert('L')
+            map_data = np.array(img)
+            map_data = np.where(map_data < 128, 1, 0)
+            print(f"从图像加载地图: {image_path}, 原始形状: (320, 320), 调整后: {map_data.shape}")
+            return map_data
+        except Exception as e:
+            print(f"加载地图图像失败: {e}")
+            return None
 
-class CoverageEnv:
-    def __init__(self, map_data=None, width=10, height=10):
-        if map_data is not None:
-            self.map_data = map_data
-            self.height, self.width = map_data.shape
-            self.obstacles = np.where(map_data == 1, True, False)  # 1表示障碍物
-        else:
-            self.width = width
-            self.height = height
-            self.obstacles = np.zeros((height, width), dtype=bool)  # 无障碍物
+    @staticmethod
+    def get_available_maps(maps_dir="maps"):
+        """获取maps目录下所有可用的PNG地图图像"""
+        if not os.path.exists(maps_dir):
+            print(f"地图目录 {maps_dir} 不存在")
+            return []
+        return glob.glob(os.path.join(maps_dir, "*.png"))
+
+class Visualizer:
+    def __init__(self, env, map_name):
+        self.env = env
+        self.map_name = map_name
+        self.fig, self.ax = plt.subplots(figsize=(8, 8))
+        self.im = self.ax.imshow(np.zeros((env.height, env.width, 3)))
+        self.info_text = self.ax.text(0.02, 0.98, '', transform=self.ax.transAxes, 
+                                    verticalalignment='top')
+        self.action_names = ['上', '下', '左', '右']
         
-        self.reset()
-
-    def reset(self):
-        """重置环境，初始化未清扫区域"""
-        # 寻找有效的起始位置（非障碍物）
-        valid_positions = [(i, j) for i in range(self.height) for j in range(self.width) 
-                          if not self.obstacles[i, j]]
-        if valid_positions:
-            start_pos = random.choice(valid_positions)
-            self.robot_pos = [start_pos[0], start_pos[1]]  # 随机选择非障碍物位置作为起点
-        else:
-            self.robot_pos = [0, 0]  # 如果找不到有效位置，默认为(0,0)
-        
-        self.covered = np.copy(self.obstacles)  # 障碍物位置视为已覆盖
-        self.direction = 0  # 0: 右, 1: 下, 2: 左, 3: 上（弓字型方向）
-        self.covered[self.robot_pos[0], self.robot_pos[1]] = True  # 标记起始位置为已覆盖
-        self.steps = 0  # 记录步数
-        return self._get_state()
-
-    def _get_state(self):
-        """返回当前状态（机器人位置 + 已清扫地图 + 障碍物）"""
-        state = np.zeros((self.height, self.width, 3), dtype=np.float32)
-        state[:, :, 0] = self.covered  # 通道0：已清扫区域
-        state[self.robot_pos[0], self.robot_pos[1], 1] = 1  # 通道1：机器人位置
-        state[:, :, 2] = self.obstacles  # 通道2：障碍物
-        return state
-
-    def step(self, action):
-        """
-        执行动作：
-        - 0: 前进
-        - 1: 左转（调整弓字型方向）
-        - 2: 右转（调整弓字型方向）
-        """
-        reward = -0.01  # 每步小的负奖励促使机器人尽快完成任务
+    def visualize_coverage(self, agent, save_video=False):
+        """可视化机器人的清扫过程"""
+        state = self.env.reset()
         done = False
-        self.steps += 1
-
-        if action == 1:  # 左转
-            self.direction = (self.direction - 1) % 4
-        elif action == 2:  # 右转
-            self.direction = (self.direction + 1) % 4
-        else:  # 前进
-            x, y = self.robot_pos
-            if self.direction == 0:  # 右
-                y += 1
-            elif self.direction == 1:  # 下
-                x += 1
-            elif self.direction == 2:  # 左
-                y -= 1
-            elif self.direction == 3:  # 上
-                x -= 1
-
-            # 检查是否越界或撞到障碍物
-            if (0 <= x < self.height and 0 <= y < self.width and not self.obstacles[x, y]):
-                old_pos = self.robot_pos.copy()
-                self.robot_pos = [x, y]
-                if not self.covered[x, y]:
-                    reward = 0.5  # 清扫新区域奖励
-                self.covered[x, y] = True
-            else:
-                reward = -0.2  # 撞墙或障碍物惩罚
-
-        # 计算覆盖率
-        coverage_rate = np.sum(self.covered) / (self.width * self.height - np.sum(self.obstacles))
+        step = 0
+        total_reward = 0
+        frames = []
         
-        # 检查是否完成覆盖或达到最大步数
-        if coverage_rate >= 0.95:  # 95%覆盖率视为完成
-            reward += 10.0  # 完成奖励
-            done = True
-        elif self.steps >= self.width * self.height * 4:  # 最大步数限制
-            done = True
-
-        info = {
-            "coverage_rate": coverage_rate,
-            "steps": self.steps
-        }
+        plt.ion()
+        while not done:
+            action = agent.act(state, training=False)  # 测试时不使用探索
+            state, reward, done, info = self.env.step(action)
+            total_reward += reward
+            step += 1
+            
+            # 更新可视化
+            coverage_map = np.zeros((self.env.height, self.env.width, 3))
+            coverage_map[:, :, 0] = self.env.covered  # 已清扫区域（红色）
+            coverage_map[:, :, 1] = self.env.obstacles  # 障碍物（绿色）
+            coverage_map[self.env.robot_pos[0], self.env.robot_pos[1]] = [0, 0, 1]  # 机器人位置（蓝色）
+            
+            self.im.set_data(coverage_map)
+            coverage_rate = info["coverage_rate"] * 100
+            self.info_text.set_text(f'步数: {step} | 动作: {self.action_names[action]} | '
+                                  f'覆盖率: {coverage_rate:.1f}% | 奖励: {reward:.2f}')
+            
+            plt.draw()
+            plt.pause(0.2)
+            if save_video:
+                frames.append([self.im])
         
-        return self._get_state(), reward, done, info
+        plt.ioff()
+        plt.title(f"最终覆盖率: {coverage_rate:.2f}% | 总步数: {step} | 总奖励: {total_reward:.2f}")
+        
+        if save_video:
+            self._save_video(frames)
+        
+        plt.show()
+    
+    def _save_video(self, frames):
+        """保存可视化过程为GIF视频"""
+        try:
+            from matplotlib.animation import ArtistAnimation
+            if not os.path.exists("videos"):
+                os.makedirs("videos")
+            ani = ArtistAnimation(self.fig, frames, interval=200, blit=True)
+            ani.save(f"videos/{self.map_name}_coverage.gif", writer='pillow', fps=5)
+            print(f"视频已保存至 videos/{self.map_name}_coverage.gif")
+        except Exception as e:
+            print(f"保存视频时出错: {e}")
 
 def create_empty_map(width, height, map_name, save_dir="maps"):
     """创建一个空地图文件"""
@@ -377,7 +341,6 @@ class DQN(nn.Module):
         # 使用Dueling DQN架构
         return value + (advantage - advantage.mean(dim=1, keepdim=True))
     
-
 class DQNAgent:
     def __init__(self, state_shape, num_actions, learning_rate=0.0005, use_cuda=True):
         self.device = torch.device("cuda" if use_cuda and torch.cuda.is_available() else "cpu")
@@ -402,7 +365,7 @@ class DQNAgent:
 
     def act(self, state, training=True):
         if training and random.random() < self.epsilon:
-            return random.randint(0, 2)  # 随机选择动作（0: 前进, 1: 左转, 2: 右转）
+            return random.randint(0, 3)  # 随机选择动作（0: 上, 1: 下, 2: 左, 3: 右）
         
         state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         with torch.no_grad():
@@ -481,366 +444,66 @@ class DQNAgent:
             return True
         return False
 
-def train_dqn(env=None, map_path=None, map_name=None, episodes=500, save_path="models"):
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
-    
-    if not os.path.exists('temp'):
-        os.makedirs('temp')
-    
-    # 设置环境
-    if env is None:
-        if map_path and os.path.exists(map_path):
-            map_data = load_map_from_image(map_path)
-            env = CoverageEnv(map_data=map_data)
-            map_name = os.path.basename(map_path).split('.')[0] if map_name is None else map_name
-        else:
-            env = CoverageEnv(width=10, height=10)
-            map_name = "default_10x10" if map_name is None else map_name
-    
-    # 创建智能体
+def train_dqn(env, map_name, episodes=500):
+    """训练DQN代理"""
     state_shape = env.reset().shape
-    num_actions = 3  # 0: 前进, 1: 左转, 2: 右转
-    agent = DQNAgent(state_shape, num_actions, use_cuda=True)
-
-    # 检查是否有已保存的模型
-    model_path = os.path.join(save_path, f"dqn_agent_{map_name}.pth")
-    if os.path.exists(model_path):
-        print(f"加载已有模型: {model_path}")
-        agent.load(model_path)
-    else:
-        print(f"创建新模型: {model_path}")
+    agent = DQNAgent(state_shape, 4, use_cuda=True)
     
     # 训练统计
-    all_rewards = []
-    all_coverages = []
-    all_steps = []
-    all_losses = []
+    episode_rewards = []
+    episode_coverages = []
+    episode_steps = []
     
-    print(f"\n{'='*50}")
-    print(f"开始训练 - 地图: {map_name}, 回合数: {episodes}")
-    print(f"{'='*50}\n")
-    
-    # 创建可视化窗口
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
-    fig.suptitle(f"Training Visualization - {map_name}")
-    
-    # 初始化显示区域
-    coverage_map = np.zeros((env.height, env.width, 3))
-    for i in range(env.height):
-        for j in range(env.width):
-            if env.obstacles[i, j]:
-                coverage_map[i, j] = [0.5, 0.5, 0.5]  # 灰色表示障碍物
-    
-    im = ax1.imshow(coverage_map, interpolation='nearest')
-    ax1.set_title("Coverage Map")
-    ax1.grid(True)
-    
-    # 训练指标图
-    rewards_line, = ax2.plot([], [], label='Reward')
-    coverage_line, = ax2.plot([], [], label='Coverage')
-    ax2.set_title("Training Metrics")
-    ax2.set_xlabel("Episode")
-    ax2.legend()
-    ax2.grid(True)
-    
-    # 添加信息文本
-    info_text = ax1.text(0.02, -0.1, '', transform=ax1.transAxes, fontsize=10,
-                        verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
-    
-    for episode in range(1, episodes+1):
+    # 训练循环
+    for episode in range(episodes):
         state = env.reset()
         total_reward = 0
+        steps = 0
         done = False
-        episode_loss = []
-        step = 0
-        
-        print(f"Episode {episode}/{episodes} 开始...")
         
         while not done:
-            step += 1
             action = agent.act(state)
             next_state, reward, done, info = env.step(action)
             agent.remember(state, action, reward, next_state, done)
-            
             loss = agent.replay()
-            if loss > 0:
-                episode_loss.append(loss)
-            
             state = next_state
             total_reward += reward
-            
-            # 更新可视化 - 每10步更新一次以提高性能
-            if step % 10 == 0:
-                # 更新覆盖地图
-                coverage_map = np.zeros((env.height, env.width, 3))
-                for i in range(env.height):
-                    for j in range(env.width):
-                        if env.obstacles[i, j]:
-                            coverage_map[i, j] = [0.5, 0.5, 0.5]  # 灰色（障碍物）
-                        elif env.covered[i, j]:
-                            coverage_map[i, j] = [0.8, 0.9, 1.0]  # 浅蓝色（已覆盖）
-                
-                # 标记当前位置
-                coverage_map[env.robot_pos[0], env.robot_pos[1]] = [0, 0, 1]  # 深蓝色（当前位置）
-                
-                im.set_array(coverage_map)
-                
-                # 更新信息文本
-                coverage_rate = info["coverage_rate"] * 100
-                action_names = {0: "前进", 1: "左转", 2: "右转"}
-                info_text.set_text(f'Episode: {episode}/{episodes}\n'
-                                 f'Step: {step} | Action: {action_names[action]}\n'
-                                 f'Coverage: {coverage_rate:.1f}% | Reward: {reward:.2f}')
-                
-                # 更新训练指标图
-                if len(all_rewards) > 0:
-                    ax2.set_xlim(0, episode)
-                    ax2.set_ylim(min(all_rewards) - 1, max(all_rewards) + 1)
-                    rewards_line.set_data(range(len(all_rewards)), all_rewards)
-                    coverage_line.set_data(range(len(all_coverages)), all_coverages)
-                
-                # 保存当前进度图像
-                plt.savefig(f'temp/training_progress.png')
-                
-                # 可选：清除当前图像以释放内存
-                plt.clf()
+            steps += 1
         
         # 每个回合结束后衰减探索率
         agent.decay_epsilon()
         
-        # 收集训练统计数据
-        all_rewards.append(total_reward)
-        all_coverages.append(info["coverage_rate"] * 100)
-        all_steps.append(info["steps"])
-        if episode_loss:
-            avg_loss = sum(episode_loss) / len(episode_loss)
-            all_losses.append(avg_loss)
-        
-        # 打印每个回合的结果
-        coverage_rate = info["coverage_rate"] * 100
-        print(f"Episode {episode}/{episodes} 完成 - 步数: {step}, 覆盖率: {coverage_rate:.2f}%, 总奖励: {total_reward:.2f}, Epsilon: {agent.epsilon:.4f}")
-        
         # 定期更新目标网络
         if episode % agent.update_target_every == 0:
             agent.update_target_model()
-            print(f"目标网络已更新 (Episode {episode})")
+        
+        # 记录训练统计
+        episode_rewards.append(total_reward)
+        episode_coverages.append(info["coverage_rate"] * 100)
+        episode_steps.append(steps)
         
         # 打印训练进度
-        if episode % 10 == 0:
-            avg_reward = sum(all_rewards[-10:]) / 10
-            avg_coverage = sum(all_coverages[-10:]) / 10
-            avg_steps = sum(all_steps[-10:]) / 10
-            avg_loss = sum(all_losses[-10:]) / max(1, len(all_losses[-10:]))
-            
-            print(f"\n--- 训练进度 (Episodes {episode-9}-{episode}) ---")
-            print(f"  平均奖励: {avg_reward:.2f}, 平均覆盖率: {avg_coverage:.2f}%")
-            print(f"  平均步数: {avg_steps:.1f}, Epsilon: {agent.epsilon:.4f}, 损失: {avg_loss:.6f}")
+        if (episode + 1) % 10 == 0:
+            avg_reward = np.mean(episode_rewards[-10:])
+            avg_coverage = np.mean(episode_coverages[-10:])
+            avg_steps = np.mean(episode_steps[-10:])
+            print(f"Episode {episode + 1}/{episodes}")
+            print(f"  平均奖励: {avg_reward:.2f}")
+            print(f"  平均覆盖率: {avg_coverage:.1f}%")
+            print(f"  平均步数: {avg_steps:.1f}")
+            print(f"  当前探索率: {agent.epsilon:.4f}")
             print(f"  记忆容量: {len(agent.memory)}/{agent.memory.maxlen}")
-            print("----------------------------------------\n")
-        
-        # 定期保存模型
-        if episode % 50 == 0 or episode == episodes:
-            agent.save(model_path)
-            print(f"模型已保存 (Episode {episode})")
-            
-            # 绘制训练过程图表
-            if episode % 100 == 0 or episode == episodes:
-                plot_path = os.path.join("results", f"{map_name}_training_ep{episode}.png")
-                plot_training_results(all_rewards, all_coverages, all_steps, all_losses, map_name, episode)
-                print(f"训练进度图表已保存至 {plot_path}")
+            print("-" * 50)
     
-    plt.ioff()
-    plt.close()
+    # 保存模型
+    if not os.path.exists("models"):
+        os.makedirs("models")
+    agent.save(f"models/dqn_agent_{map_name}.pth")
+    print(f"模型已保存至 models/dqn_agent_{map_name}.pth")
     
-    # 最终保存模型
-    agent.save(model_path)
-    
-    # 绘制最终训练结果图表
-    plot_training_results(all_rewards, all_coverages, all_steps, all_losses, map_name, episodes)
-    
-    print(f"\n{'='*50}")
-    print(f"训练完成 - 地图: {map_name}, 回合数: {episodes}")
-    print(f"最终覆盖率: {all_coverages[-1]:.2f}%, 最终奖励: {all_rewards[-1]:.2f}")
-    print(f"模型已保存至: {model_path}")
-    print(f"{'='*50}\n")
-    
-    return agent, map_name
-
-def plot_training_results(rewards, coverages, steps, losses, map_name, episodes):
-    """绘制训练过程中的指标变化"""
-    plt.figure(figsize=(15, 10))
-    
-    # 绘制奖励变化
-    plt.subplot(2, 2, 1)
-    plt.plot(rewards)
-    plt.title(f'Rewards ({map_name})')
-    plt.xlabel('Episode')
-    plt.ylabel('Total Reward')
-    
-    # 绘制覆盖率变化
-    plt.subplot(2, 2, 2)
-    plt.plot(coverages)
-    plt.title(f'Coverage Rate ({map_name})')
-    plt.xlabel('Episode')
-    plt.ylabel('Coverage (%)')
-    plt.ylim(0, 101)
-    
-    # 绘制步数变化
-    plt.subplot(2, 2, 3)
-    plt.plot(steps)
-    plt.title(f'Steps per Episode ({map_name})')
-    plt.xlabel('Episode')
-    plt.ylabel('Steps')
-    
-    # 绘制损失变化
-    if losses:
-        plt.subplot(2, 2, 4)
-        plt.plot(losses)
-        plt.title(f'Average Loss per Episode ({map_name})')
-        plt.xlabel('Episode')
-        plt.ylabel('Loss')
-    
-    plt.tight_layout()
-    
-    # 保存图表
-    results_dir = "results"
-    if not os.path.exists(results_dir):
-        os.makedirs(results_dir)
-    plt.savefig(os.path.join(results_dir, f"{map_name}_training_ep{episodes}.png"))
-    plt.close()
-
-def visualize_coverage(agent, env=None, map_path=None, map_name=None, save_video=False):
-    """可视化机器人清扫过程"""
-    plt.ion()  # 开启交互模式
-    
-    # 设置环境
-    if env is None:
-        if map_path and os.path.exists(map_path):
-            map_data = load_map_from_image(map_path)
-            env = CoverageEnv(map_data=map_data)
-            map_name = os.path.basename(map_path).split('.')[0] if map_name is None else map_name
-        else:
-            env = CoverageEnv(width=10, height=10)
-            map_name = "default_10x10" if map_name is None else map_name
-    elif map_name is None:
-        map_name = "custom_map"
-    
-    state = env.reset()
-    
-    # 创建图形
-    fig, ax = plt.subplots(figsize=(10, 8))
-    fig.suptitle(f"Coverage Visualization - {map_name}", fontsize=16)
-    
-    # 设置颜色映射
-    cmap = plt.cm.get_cmap('Blues', 4)
-    
-    # 保存每一步的图像（用于创建视频）
-    frames = []
-    
-    # 初始状态
-    coverage_map = np.zeros((env.height, env.width, 3))
-    # 标记障碍物为灰色
-    for i in range(env.height):
-        for j in range(env.width):
-            if env.obstacles[i, j]:
-                coverage_map[i, j] = [0.5, 0.5, 0.5]  # 灰色
-    
-    # 初始位置标记为蓝色
-    coverage_map[env.robot_pos[0], env.robot_pos[1]] = [0, 0, 1]  # 蓝色
-    
-    im = ax.imshow(coverage_map, interpolation='nearest')
-    
-    # 添加网格线
-    ax.grid(which='major', axis='both', linestyle='-', color='k', linewidth=1)
-    ax.set_xticks(np.arange(-.5, env.width, 1), minor=True)
-    ax.set_yticks(np.arange(-.5, env.height, 1), minor=True)
-    ax.set_xticklabels([])
-    ax.set_yticklabels([])
-    ax.tick_params(which='minor', length=0)
-    
-    # 绘制坐标
-    for i in range(env.height):
-        for j in range(env.width):
-            ax.text(j, i, f'({i},{j})', va='center', ha='center', fontsize=8)
-    
-    # 设置信息文本
-    info_text = ax.text(0.02, 0.02, '', transform=ax.transAxes, fontsize=12,
-                        verticalalignment='bottom', bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
-    
-    # 绘制初始状态
-    frames.append([im])
-    
-    # 执行清扫
-    done = False
-    step = 0
-    total_reward = 0
-    
-    # 动作名称映射
-    action_names = {0: "前进", 1: "左转", 2: "右转"}
-    
-    while not done:
-        action = agent.act(state, training=False)  # 测试模式，不使用随机探索
-        next_state, reward, done, info = env.step(action)
-        state = next_state
-        step += 1
-        total_reward += reward
-        
-        # 更新可视化
-        coverage_map = np.zeros((env.height, env.width, 3))
-        
-        # 标记已覆盖区域为浅蓝色
-        for i in range(env.height):
-            for j in range(env.width):
-                if env.covered[i, j] and not env.obstacles[i, j]:
-                    coverage_map[i, j] = [0.8, 0.9, 1.0]  # 浅蓝色
-                elif env.obstacles[i, j]:
-                    coverage_map[i, j] = [0.5, 0.5, 0.5]  # 灰色（障碍物）
-        
-        # 标记当前位置为深蓝色
-        coverage_map[env.robot_pos[0], env.robot_pos[1]] = [0, 0, 1]  # 深蓝色
-        
-        # 更新图像
-        im.set_data(coverage_map)
-        
-        # 更新信息文本
-        coverage_rate = info["coverage_rate"] * 100
-        info_text.set_text(f'步数: {step} | 动作: {action_names[action]} | 覆盖率: {coverage_rate:.1f}% | 奖励: {reward:.2f}')
-        
-        plt.pause(0.2)  # 暂停一小段时间，使可视化变化可见
-        frames.append([im])
-        
-        # 如果覆盖率达到100%或者步数过多，结束模拟
-        if coverage_rate >= 99.9 or step > env.width * env.height * 2:
-            done = True
-    
-    # 显示最终结果
-    plt.ioff()
-    plt.title(f"Final Coverage: {coverage_rate:.2f}% | Steps: {step} | Total Reward: {total_reward:.2f}")
-    
-    # 如果需要保存视频
-    if save_video:
-        try:
-            from matplotlib.animation import ArtistAnimation
-            import matplotlib.animation as animation
-            
-            # 创建动画
-            ani = ArtistAnimation(fig, frames, interval=200, blit=True)
-            
-            # 保存为GIF
-            if not os.path.exists("videos"):
-                os.makedirs("videos")
-            ani.save(f"videos/{map_name}_coverage.gif", writer='pillow', fps=5)
-            print(f"视频已保存至 videos/{map_name}_coverage.gif")
-        except Exception as e:
-            print(f"保存视频时出错: {e}")
-
-    plt.show()
+    return agent, episode_rewards
 
 def main():
-    if not os.path.exists('temp'):
-        os.makedirs('temp')
-    
     parser = argparse.ArgumentParser(description="扫地机器人全覆盖强化学习")
     subparsers = parser.add_subparsers(dest="command", help="子命令")
     
@@ -855,49 +518,41 @@ def main():
     test_parser.add_argument("--save-video", action="store_true", help="保存为视频")
     
     # 列出地图命令
-    list_parser = subparsers.add_parser("list_maps", help="列出所有地图")
+    subparsers.add_parser("list_maps", help="列出所有地图")
     
     args = parser.parse_args()
     
     if args.command == "train":
-        # 加载地图图像
-        if os.path.exists(args.map):
-            map_data = load_map_from_image(args.map)
-            if map_data is None:
-                print(f"无法加载地图图像: {args.map}")
-                return
-            
-            env = CoverageEnv(map_data=map_data)
-            map_name = os.path.basename(args.map).split('.')[0]
-        else:
-            print(f"地图文件不存在: {args.map}")
-            print(f"使用默认地图 10x10")
-            env = CoverageEnv(width=10, height=10)
-            map_name = "default_10x10"
+        # 加载地图
+        map_data = MapLoader.load_map_from_image(args.map)
+        if map_data is None:
+            print(f"无法加载地图图像: {args.map}")
+            return
         
-        agent, _ = train_dqn(env=env, map_name=map_name, episodes=args.episodes)
-        visualize_coverage(agent, env=env, map_name=map_name, save_video=True)
+        env = CoverageEnv(map_data=map_data)
+        map_name = os.path.basename(args.map).split('.')[0]
+        
+        # 训练
+        agent, rewards = train_dqn(env, map_name, args.episodes)
+        
+        # 可视化训练结果
+        visualizer = Visualizer(env, map_name)
+        visualizer.visualize_coverage(agent, save_video=True)
     
     elif args.command == "test":
-        # 加载地图图像
-        if os.path.exists(args.map):
-            map_data = load_map_from_image(args.map)
-            if map_data is None:
-                print(f"无法加载地图图像: {args.map}")
-                return
-            
-            env = CoverageEnv(map_data=map_data)
-            map_name = os.path.basename(args.map).split('.')[0]
-        else:
-            print(f"地图文件不存在: {args.map}")
-            print(f"使用默认地图 10x10")
-            env = CoverageEnv(width=10, height=10)
-            map_name = "default_10x10"
+        # 加载地图
+        map_data = MapLoader.load_map_from_image(args.map)
+        if map_data is None:
+            print(f"无法加载地图图像: {args.map}")
+            return
+        
+        env = CoverageEnv(map_data=map_data)
+        map_name = os.path.basename(args.map).split('.')[0]
         
         # 加载模型
         state_shape = env.reset().shape
-        agent = DQNAgent(state_shape, 3, use_cuda=True)
-        model_path = os.path.join("models", f"dqn_agent_{map_name}.pth")
+        agent = DQNAgent(state_shape, 4, use_cuda=True)
+        model_path = f"models/dqn_agent_{map_name}.pth"
         
         if not os.path.exists(model_path):
             print(f"找不到模型文件: {model_path}")
@@ -905,10 +560,13 @@ def main():
             return
         
         agent.load(model_path)
-        visualize_coverage(agent, env=env, map_name=map_name, save_video=args.save_video)
+        
+        # 可视化测试结果
+        visualizer = Visualizer(env, map_name)
+        visualizer.visualize_coverage(agent, save_video=args.save_video)
     
     elif args.command == "list_maps":
-        maps = get_available_map_images()
+        maps = MapLoader.get_available_maps()
         if maps:
             print("可用地图图像:")
             for i, map_path in enumerate(maps, 1):
@@ -919,7 +577,6 @@ def main():
             print("没有找到可用的地图图像文件。请将PNG地图图像放入maps文件夹")
     
     else:
-        # 默认行为：如果没有指定命令，显示帮助信息
         parser.print_help()
 
 if __name__ == "__main__":
