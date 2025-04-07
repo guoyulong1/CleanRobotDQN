@@ -28,7 +28,7 @@ plt.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
 
 class MapLoader:
     @staticmethod
-    def load_map_from_image(image_path, target_size=(32, 32)):
+    def load_map_from_image(image_path, target_size=(160, 160)):
         """从PNG图像加载SLAM地图数据，并调整大小到指定尺寸"""
         try:
             img = Image.open(image_path)
@@ -67,7 +67,7 @@ class Visualizer:
     def __init__(self, env, map_name):
         self.env = env
         self.map_name = map_name
-        self.action_names = ["上", "下", "左", "右", "左转", "右转"]
+        self.action_names = ["上", "下", "左", "右"]  # 移除转向动作
         
     def visualize_coverage(self, agent, save_video=False):
         """可视化覆盖过程"""
@@ -83,10 +83,16 @@ class Visualizer:
         fig = plt.figure(figsize=(10, 10))
         ax = fig.add_subplot(111)
         
+        # 用于测试的信息
+        last_action = None
+        info = {'coverage_rate': 0.0, 'near_frontier': False}
+        
         try:
             while not done:
                 # 选择动作（测试时不使用探索）
-                action = agent.act(state, training=False)
+                info['last_action'] = last_action
+                action = agent.act(state, training=False, info=info)
+                last_action = action
                 
                 # 执行动作
                 next_state, reward, done, info = self.env.step(action)
@@ -113,6 +119,10 @@ class Visualizer:
                 map_display[self.env.unknown] = [0.5, 0.5, 0.5]     # 未知区域为中灰色
                 map_display[self.env.covered] = [0.0, 0.8, 0.0]     # 已覆盖区域为绿色
                 
+                # 标记前沿区域
+                if hasattr(self.env, 'frontier_cells'):
+                    map_display[self.env.frontier_cells] = [0.0, 0.6, 1.0]  # 前沿区域为蓝色
+                
                 # 标记机器人位置和方向
                 y, x = self.env.robot_pos
                 map_display[y, x] = [1.0, 0.0, 0.0]  # 机器人位置为红色
@@ -134,6 +144,7 @@ class Visualizer:
                     plt.Line2D([0], [0], marker='s', color='w', label='障碍物', markerfacecolor='darkgray'),
                     plt.Line2D([0], [0], marker='s', color='w', label='未知区域', markerfacecolor='dimgray'),
                     plt.Line2D([0], [0], marker='s', color='w', label='已覆盖区域', markerfacecolor='green'),
+                    plt.Line2D([0], [0], marker='s', color='w', label='前沿区域', markerfacecolor='blue'),
                     plt.Line2D([0], [0], marker='s', color='w', label='机器人位置', markerfacecolor='red'),
                     plt.Line2D([0], [0], marker='s', color='w', label='移动方向', markerfacecolor='orange')
                 ]
@@ -164,226 +175,36 @@ class Visualizer:
         print(f"总奖励: {total_reward:.2f}")
         print(f"最终覆盖率: {info['coverage_rate']:.1%}")
 
-def create_empty_map(width, height, map_name, save_dir="maps"):
-    """创建一个空地图文件"""
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
-    
-    map_data = np.zeros((height, width), dtype=int)
-    save_path = os.path.join(save_dir, f"{map_name}.txt")
-    
-    np.savetxt(save_path, map_data, fmt='%d')
-    print(f"空地图已创建并保存至 {save_path}")
-    return save_path
-
-def create_random_obstacle_map(width, height, obstacle_ratio=0.2, map_name="random_map", save_dir="maps"):
-    """创建一个带有随机障碍物的地图"""
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
-    
-    map_data = np.zeros((height, width), dtype=int)
-    
-    # 随机放置障碍物
-    num_obstacles = int(width * height * obstacle_ratio)
-    obstacle_positions = np.random.choice(width * height, num_obstacles, replace=False)
-    
-    for pos in obstacle_positions:
-        i = pos // width
-        j = pos % width
-        map_data[i, j] = 1  # 1表示障碍物
-    
-    # 确保地图可遍历（简单检查：前后左右四个方向至少有一个不是障碍物）
-    for i in range(height):
-        for j in range(width):
-            if map_data[i, j] == 0:  # 非障碍物位置
-                neighbors = []
-                if i > 0:
-                    neighbors.append(map_data[i-1, j])
-                if i < height-1:
-                    neighbors.append(map_data[i+1, j])
-                if j > 0:
-                    neighbors.append(map_data[i, j-1])
-                if j < width-1:
-                    neighbors.append(map_data[i, j+1])
-                
-                if all(n == 1 for n in neighbors):  # 如果四周都是障碍物
-                    # 随机清除一个障碍物
-                    direction = np.random.randint(0, len(neighbors))
-                    if direction == 0 and i > 0:
-                        map_data[i-1, j] = 0
-                    elif direction == 1 and i < height-1:
-                        map_data[i+1, j] = 0
-                    elif direction == 2 and j > 0:
-                        map_data[i, j-1] = 0
-                    elif direction == 3 and j < width-1:
-                        map_data[i, j+1] = 0
-    
-    # 保存地图
-    save_path = os.path.join(save_dir, f"{map_name}.txt")
-    np.savetxt(save_path, map_data, fmt='%d')
-    
-    # 可视化地图
-    plt.figure(figsize=(8, 8))
-    plt.imshow(map_data, cmap='binary')
-    plt.title(f"{map_name} - 黑色: 障碍物, 白色: 空地")
-    
-    # 修改这一行
-    cbar = plt.colorbar(ticks=[0, 1])
-    cbar.ax.set_yticklabels(["空地", "障碍物"])  # 分开设置标签
-    
-    plt.grid(True)
-    plt.savefig(os.path.join(save_dir, f"{map_name}.png"))
-    plt.close()
-    
-    print(f"随机障碍物地图已创建并保存至 {save_path}")
-    return save_path
-
-def create_room_map(width, height, room_type="apartment", map_name=None, save_dir="maps"):
-    """创建一个模拟房间的地图"""
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
-    
-    if map_name is None:
-        map_name = f"{room_type}_{width}x{height}"
-    
-    map_data = np.zeros((height, width), dtype=int)
-    
-    if room_type == "apartment":
-        # 创建外墙
-        map_data[0, :] = 1
-        map_data[height-1, :] = 1
-        map_data[:, 0] = 1
-        map_data[:, width-1] = 1
-        
-        # 创建房间隔断
-        if width >= 10 and height >= 10:
-            # 客厅和厨房之间的墙
-            wall_pos_x = width // 3
-            for i in range(1, height // 2):
-                map_data[i, wall_pos_x] = 1
-            
-            # 厨房和卧室之间的墙
-            wall_pos_y = height // 2
-            for j in range(1, 2 * width // 3):
-                map_data[wall_pos_y, j] = 1
-            
-            # 卧室和卫生间之间的墙
-            wall_pos_x2 = 2 * width // 3
-            for i in range(wall_pos_y + 1, height - 1):
-                map_data[i, wall_pos_x2] = 1
-            
-            # 添加门
-            map_data[height//4, wall_pos_x] = 0  # 客厅到厨房的门
-            map_data[wall_pos_y, width//4] = 0  # 客厅到卧室的门
-            map_data[wall_pos_y, wall_pos_x + width//6] = 0  # 厨房到卧室的门
-            map_data[3*height//4, wall_pos_x2] = 0  # 卧室到卫生间的门
-            
-            # 添加一些家具（作为障碍物）
-            # 客厅沙发
-            for j in range(width//6, width//3 - 1):
-                map_data[3*height//4, j] = 1
-            
-            # 厨房桌子
-            map_data[height//4, wall_pos_x + width//10] = 1
-            map_data[height//4 + 1, wall_pos_x + width//10] = 1
-            
-            # 卧室床
-            for i in range(wall_pos_y + height//6, wall_pos_y + height//3):
-                for j in range(width//3 + 2, width//2):
-                    map_data[i, j] = 1
-    
-    elif room_type == "office":
-        # 创建外墙
-        map_data[0, :] = 1
-        map_data[height-1, :] = 1
-        map_data[:, 0] = 1
-        map_data[:, width-1] = 1
-        
-        # 创建办公室隔断
-        if width >= 12 and height >= 12:
-            # 水平隔断
-            for j in range(width//4, 3*width//4):
-                map_data[height//3, j] = 1
-                map_data[2*height//3, j] = 1
-            
-            # 垂直隔断
-            for i in range(height//3, 2*height//3):
-                map_data[i, width//3] = 1
-                map_data[i, 2*width//3] = 1
-            
-            # 添加门
-            map_data[height//3, width//2] = 0
-            map_data[2*height//3, width//2] = 0
-            map_data[height//2, width//3] = 0
-            map_data[height//2, 2*width//3] = 0
-            
-            # 添加办公桌
-            for i in range(height//6, height//3 - 1):
-                for j in range(width//6, width//3 - 1):
-                    map_data[i, j] = 1
-            
-            for i in range(height//6, height//3 - 1):
-                for j in range(2*width//3 + 1, 5*width//6):
-                    map_data[i, j] = 1
-            
-            for i in range(2*height//3 + 1, 5*height//6):
-                for j in range(width//6, width//3 - 1):
-                    map_data[i, j] = 1
-            
-            for i in range(2*height//3 + 1, 5*height//6):
-                for j in range(2*width//3 + 1, 5*width//6):
-                    map_data[i, j] = 1
-    
-    # 保存地图
-    save_path = os.path.join(save_dir, f"{map_name}.txt")
-    np.savetxt(save_path, map_data, fmt='%d')
-    
-    # 可视化地图
-    plt.figure(figsize=(10, 10))
-    plt.imshow(map_data, cmap='binary')
-    plt.title(f"{map_name} - 黑色: 墙/障碍物, 白色: 空地")
-    
-    # 修改这一行
-    cbar = plt.colorbar(ticks=[0, 1])
-    cbar.ax.set_yticklabels(["空地", "障碍物"])  # 分开设置标签
-    
-    plt.grid(True)
-    plt.savefig(os.path.join(save_dir, f"{map_name}.png"))
-    plt.close()
-    
-    print(f"{room_type}类型的地图已创建并保存至 {save_path}")
-    return save_path
 
 class DQN(nn.Module):
     def __init__(self, input_shape, num_actions):
         super(DQN, self).__init__()
         
-        # 确保输入通道数正确
-        input_channels = input_shape[2]  # 应该是5个通道
+        # 减少输入通道数
+        input_channels = input_shape[2]
         
-        # 使用更大的卷积核和更多的通道数
-        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=3, stride=1, padding=1)
-        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
-        self.conv3 = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1)
+        # 减少卷积层数和通道数
+        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=3, stride=2, padding=1)  # 使用stride=2减少特征图大小
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1)
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1)
         
-        # 添加批归一化层
-        self.bn1 = nn.BatchNorm2d(64)
-        self.bn2 = nn.BatchNorm2d(128)
-        self.bn3 = nn.BatchNorm2d(256)
+        # 批归一化层
+        self.bn1 = nn.BatchNorm2d(32)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.bn3 = nn.BatchNorm2d(128)
         
         # 计算卷积层输出大小
         conv_out_size = self._get_conv_out(input_shape)
         
-        # 使用更大的全连接层
-        self.fc1 = nn.Linear(conv_out_size, 512)
-        self.fc2 = nn.Linear(512, 256)
-        self.fc3 = nn.Linear(256, num_actions)
+        # 减少全连接层大小
+        self.fc1 = nn.Linear(conv_out_size, 256)
+        self.fc2 = nn.Linear(256, 128)
+        self.fc3 = nn.Linear(128, num_actions)
         
-        # 添加dropout层
+        # Dropout层
         self.dropout = nn.Dropout(0.2)
         
     def _get_conv_out(self, shape):
-        # 创建一个示例输入，确保通道数正确
         x = torch.zeros(1, shape[2], shape[0], shape[1])
         x = self.conv1(x)
         x = self.conv2(x)
@@ -391,20 +212,21 @@ class DQN(nn.Module):
         return int(np.prod(x.size()))
     
     def forward(self, x):
-        # 确保输入维度正确 [batch_size, channels, height, width]
         if x.dim() == 4:
             if x.size(1) != self.conv1.in_channels:
                 x = x.permute(0, 3, 1, 2)
         
-        # 使用更大的批量大小
-        batch_size = x.size(0)
+        # 限制批量大小
+        batch_size = min(x.size(0), 32)  # 限制最大批量大小为32
+        if x.size(0) > batch_size:
+            x = x[:batch_size]
         
         # 卷积层
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         x = F.relu(self.bn3(self.conv3(x)))
         
-        # 展平 - 使用reshape而不是view
+        # 展平
         x = x.reshape(batch_size, -1)
         
         # 全连接层
@@ -430,15 +252,18 @@ class DQNAgent:
         self.action_space = action_space
         self.use_cuda = use_cuda
         
-        # 增加内存容量和批量大小
-        self.memory = deque(maxlen=200000)
-        self.batch_size = 128  # 增加批量大小
+        # 减少内存容量和批量大小
+        self.memory = deque(maxlen=50000)  # 减少经验回放缓冲区大小
+        self.batch_size = 32  # 减小批量大小
+        
+        # 新增：优先经验回放
+        self.priority_memory = deque(maxlen=5000)  # 优先经验回放缓冲区
         
         # 创建网络
         self.model = DQN(state_shape, action_space)
         self.target_model = DQN(state_shape, action_space)
         
-        # 使用Adam优化器并调整学习率
+        # 优化器
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.0001, weight_decay=1e-5)
         
         # 使用GPU
@@ -452,16 +277,20 @@ class DQNAgent:
         # 更新目标网络
         self.update_target_model()
         
-        # 探索参数
+        # 探索参数 - 放缓衰减速度
         self.epsilon = 1.0
-        self.epsilon_min = 0.01
-        self.epsilon_decay = 0.995  # 降低衰减率
+        self.epsilon_min = 0.05  # 增加最小探索率
+        self.epsilon_decay = 0.998  # 放缓衰减速度
+        self.coverage_rate = 0.0  # 用于动态调整探索率
         
         # 训练参数
         self.gamma = 0.99
-        self.update_target_every = 5  # 更频繁地更新目标网络
+        self.update_target_every = 5
         
-        # 预分配GPU内存
+        # 记录训练状态
+        self.training_episodes = 0
+        
+        # 预分配较小的GPU内存
         if self.use_cuda:
             self.state_batch = torch.zeros(self.batch_size, state_shape[2], state_shape[0], state_shape[1], device=self.device)
             self.next_state_batch = torch.zeros(self.batch_size, state_shape[2], state_shape[0], state_shape[1], device=self.device)
@@ -486,6 +315,8 @@ class DQNAgent:
         # 清理内存
         if hasattr(self, 'memory'):
             self.memory.clear()
+        if hasattr(self, 'priority_memory'):
+            self.priority_memory.clear()
         
         # 强制垃圾回收
         import gc
@@ -493,11 +324,42 @@ class DQNAgent:
     
     def remember(self, state, action, reward, next_state, done):
         """存储经验"""
-        self.memory.append((state, action, reward, next_state, done))
+        experience = (state, action, reward, next_state, done)
+        self.memory.append(experience)
+        
+        # 判断是否是高价值经验（高奖励或惩罚）
+        if abs(reward) > 1.0 or done:
+            # 高奖励或任务完成的经验优先记忆
+            self.priority_memory.append(experience)
     
-    def act(self, state, training=True):
+    def act(self, state, training=True, info=None):
         """选择动作"""
-        if training and random.random() < self.epsilon:
+        # 更新覆盖率（如果info中提供）
+        if info and 'coverage_rate' in info:
+            self.coverage_rate = info['coverage_rate']
+        
+        # 动态探索率：覆盖率低时增加探索，覆盖率高时减少探索
+        dynamic_epsilon = self.epsilon
+        if training and self.coverage_rate > 0:
+            # 覆盖率在80%以上时，基于覆盖率动态调整探索率
+            if self.coverage_rate >= 0.8:
+                # 覆盖率高时，降低探索率以专注于优化路径
+                dynamic_epsilon = max(self.epsilon_min, self.epsilon * (1.0 - self.coverage_rate))
+            elif self.coverage_rate < 0.3:
+                # 覆盖率低时，保持较高探索率
+                dynamic_epsilon = max(self.epsilon, 0.3)
+        
+        if training and random.random() < dynamic_epsilon:
+            # 随机探索
+            if info and 'near_frontier' in info and info['near_frontier'] and random.random() < 0.7:
+                # 如果在前沿区域附近，偏向选择未尝试过的动作
+                valid_actions = list(range(self.action_space))
+                last_action = info.get('last_action', None)
+                if last_action is not None and random.random() < 0.5:
+                    # 50%概率避免选择上一个动作（减少原地踏步）
+                    if last_action in valid_actions:
+                        valid_actions.remove(last_action)
+                return random.choice(valid_actions)
             return random.randrange(self.action_space)
         
         # 确保输入维度正确 [batch_size, channels, height, width]
@@ -515,8 +377,34 @@ class DQNAgent:
         if len(self.memory) < self.batch_size:
             return 0
         
-        # 使用numpy进行批量采样
-        batch = random.sample(self.memory, self.batch_size)
+        # 混合采样：从普通记忆和优先记忆中采样
+        priority_ratio = 0.3  # 优先经验的比例
+        priority_size = min(int(self.batch_size * priority_ratio), len(self.priority_memory))
+        normal_size = self.batch_size - priority_size
+        
+        batch = []
+        if priority_size > 0:
+            # 从优先记忆中采样
+            priority_batch = random.sample(self.priority_memory, priority_size)
+            batch.extend(priority_batch)
+        
+        if normal_size > 0:
+            # 从普通记忆中采样
+            normal_batch = random.sample(self.memory, normal_size)
+            batch.extend(normal_batch)
+        
+        # 如果覆盖率较低，增加特殊样本以鼓励探索
+        if self.coverage_rate < 0.5 and len(batch) == self.batch_size:
+            # 增加对有奖励样本的重视
+            rewards = [abs(x[2]) for x in batch]
+            min_reward_idx = rewards.index(min(rewards))
+            
+            # 从记忆中选择一个高奖励样本替换低奖励样本
+            for i, experience in enumerate(self.memory):
+                if abs(experience[2]) > 1.0:  # 高奖励
+                    batch[min_reward_idx] = experience
+                    break
+        
         states = np.array([x[0] for x in batch])
         actions = np.array([x[1] for x in batch])
         rewards = np.array([x[2] for x in batch])
@@ -617,6 +505,28 @@ class DQNAgent:
         if self.device.type == 'cuda':
             torch.cuda.empty_cache()
 
+def print_progress(episode, total_episodes, steps, coverage_rate, epsilon, avg_reward):
+    """
+    打印训练进度
+    episode: 当前回合
+    total_episodes: 总回合数
+    steps: 当前回合步数
+    coverage_rate: 覆盖率
+    epsilon: 探索率
+    avg_reward: 平均奖励
+    """
+    bar_length = 30
+    progress = episode / total_episodes
+    block = int(round(bar_length * progress))
+    progress_bar = "=" * block + "-" * (bar_length - block)
+    
+    # 格式化输出信息
+    print(f"\rEpisode: [{progress_bar}] {episode}/{total_episodes} | "
+          f"Steps: {steps:4d} | "
+          f"Coverage: {coverage_rate:.2%} | "
+          f"Epsilon: {epsilon:.3f} | "
+          f"Avg Reward: {avg_reward:.2f}", end='')
+
 def train_dqn(env, episodes=1000, save_video=False):
     """训练DQN模型"""
     # 创建DQN代理
@@ -628,18 +538,23 @@ def train_dqn(env, episodes=1000, save_video=False):
     episode_coverage_rates = []
     
     # 训练循环
-    for episode in range(episodes):
+    total_episodes = episodes
+    rewards_window = []  # 用于计算平均奖励的窗口
+
+    for episode in range(total_episodes):
         state = env.reset()
-        total_reward = 0
-        steps = 0
+        episode_reward = 0
         done = False
         
-        # 记录每个episode的开始
-        print(f"\n开始训练 Episode {episode + 1}/{episodes}")
+        # 本回合的状态信息
+        last_action = None
+        info = {'coverage_rate': 0.0, 'near_frontier': False}
         
         while not done:
-            # 选择动作
-            action = agent.act(state)
+            # 选择动作 - 传递额外信息以优化动作选择
+            info['last_action'] = last_action
+            action = agent.act(state, training=True, info=info)
+            last_action = action
             
             # 执行动作
             next_state, reward, done, info = env.step(action)
@@ -652,33 +567,44 @@ def train_dqn(env, episodes=1000, save_video=False):
             
             # 更新状态
             state = next_state
-            total_reward += reward
-            steps += 1
+            episode_reward += reward
             
             # 每100步输出一次训练状态
-            if steps % 100 == 0:
-                print(f"Episode {episode + 1}, Step {steps}, Reward: {reward:.2f}, Coverage: {info['coverage_rate']:.2%}")
+            if env.steps_taken % 100 == 0:
+                print_progress(
+                    episode=episode + 1,
+                    total_episodes=total_episodes,
+                    steps=env.steps_taken,
+                    coverage_rate=env.coverage_rate,
+                    epsilon=agent.epsilon,
+                    avg_reward=episode_reward / env.steps_taken
+                )
         
         # 记录episode结果
-        episode_rewards.append(total_reward)
-        episode_steps.append(steps)
-        episode_coverage_rates.append(info['coverage_rate'])
+        episode_rewards.append(episode_reward)
+        episode_steps.append(env.steps_taken)
+        episode_coverage_rates.append(env.coverage_rate)
+        
+        # 更新平均奖励
+        rewards_window.append(episode_reward)
+        if len(rewards_window) > 100:  # 保持最近100个episode的奖励
+            rewards_window.pop(0)
+        avg_reward = sum(rewards_window) / len(rewards_window)
         
         # 输出episode总结
-        print(f"Episode {episode + 1} 完成:")
-        print(f"总步数: {steps}")
-        print(f"总奖励: {total_reward:.2f}")
-        print(f"覆盖率: {info['coverage_rate']:.2%}")
+        # print(f"\nEpisode {episode + 1} 完成:")
+        # print(f"总步数: {env.steps_taken}")
+        # print(f"总奖励: {episode_reward:.2f}")
+        # print(f"覆盖率: {env.coverage_rate:.2%}")
         
-        # 每10个episode输出一次统计信息
-        if (episode + 1) % 10 == 0:
-            avg_reward = np.mean(episode_rewards[-10:])
-            avg_steps = np.mean(episode_steps[-10:])
-            avg_coverage = np.mean(episode_coverage_rates[-10:])
-            print(f"\n最近10个episode的平均值:")
-            print(f"平均步数: {avg_steps:.1f}")
-            print(f"平均奖励: {avg_reward:.2f}")
-            print(f"平均覆盖率: {avg_coverage:.2%}")
+        # # 每10个episode输出一次统计信息
+        # if (episode + 1) % 10 == 0:
+        #     avg_steps = np.mean(episode_steps[-10:])
+        #     avg_coverage = np.mean(episode_coverage_rates[-10:])
+        #     print(f"\n最近10个episode的平均值:")
+        #     print(f"平均步数: {avg_steps:.1f}")
+        #     print(f"平均奖励: {avg_reward:.2f}")
+        #     print(f"平均覆盖率: {avg_coverage:.2%}")
         
         # 更新目标网络
         if episode % agent.update_target_every == 0:
