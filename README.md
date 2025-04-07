@@ -1,103 +1,120 @@
-# DQN扫地机器人全覆盖训练项目
+# CleanRobotDQN
 
-这是一个使用深度Q学习(DQN)算法来训练扫地机器人实现房间全覆盖的项目。机器人通过强化学习学会在房间内高效地规划清扫路径。
+基于深度强化学习的机器人清扫覆盖算法
+
+## 项目简介
+
+这个项目使用深度强化学习（DQN）训练一个能够自主清扫覆盖整个区域的机器人。机器人在一个包含障碍物的环境中学习如何有效地覆盖所有可达区域，同时避免障碍物和重复清扫已覆盖区域。
+
+### 主要特点
+
+- 使用深度Q网络（DQN）进行强化学习
+- 支持各种尺寸和复杂度的地图
+- 动态奖励机制，优化探索和覆盖率
+- 可视化测试结果
+- 优先经验回放和动态探索率
+
+## 安装指南
+
+### 环境要求
+
+- Python 3.8+
+- PyTorch 2.0.0+
+- NumPy 1.19.5+
+- Matplotlib 3.5.0+
+- OpenCV 4.5.3+
+
+### 安装步骤
+
+1. 克隆仓库：
+   ```
+   git clone https://github.com/yourusername/CleanRobotDQN.git
+   cd CleanRobotDQN
+   ```
+
+2. 安装依赖：
+   ```
+   pip install -r requirements.txt
+   ```
+
+## 使用方法
+
+### 列出可用地图
+
+```bash
+python main.py list_maps
+```
+
+### 训练机器人
+
+```bash
+python main.py train --map maps/map.png --episodes 500 --gpu
+```
+
+参数说明：
+- `--map`: 地图图像路径
+- `--episodes`: 训练回合数
+- `--gpu`: 使用GPU加速训练
+- `--save-video`: 保存训练过程视频
+- `--seed`: 随机种子
+
+### 测试机器人
+
+```bash
+python main.py test --map maps/map.png --gpu
+```
+
+参数说明：
+- `--map`: 地图图像路径
+- `--gpu`: 使用GPU加速测试
+- `--save-video`: 保存测试过程视频
+- `--seed`: 随机种子
+
+## 自定义地图
+
+1. 准备一个PNG图像作为地图：
+   - 黑色区域 (RGB 0,0,0): 可到达区域
+   - 白色区域 (RGB 255,255,255): 障碍物
+   - 灰色区域 (RGB 128,128,128): 未知区域
+
+2. 将地图图像放入 `maps` 目录
+
+3. 使用新地图进行训练或测试：
+   ```bash
+   python main.py train --map maps/your_map.png
+   ```
 
 ## 项目结构
 
 ```
-.
-├── src/                    # 源代码目录
-│   ├── environment.py      # 环境实现
-│   ├── models/            # 模型相关代码
-│   └── utils/             # 工具函数
-├── maps/                  # 地图文件目录
-├── models/                # 训练好的模型保存目录
-├── videos/                # 测试视频保存目录
-├── main.py                # 主程序入口
-└── requirements.txt       # 项目依赖
+CleanRobotDQN/
+├── main.py                 # 程序入口点
+├── requirements.txt        # 项目依赖
+├── maps/                   # 地图文件夹
+│   └── map.png             # 默认地图
+├── models/                 # 保存训练好的模型
+└── src/                    # 源代码
+    ├── environment.py      # 环境定义
+    ├── config.py           # 配置文件
+    ├── models/             # 网络和代理定义
+    │   ├── network.py      # DQN网络架构
+    │   └── agent.py        # DQN代理类
+    ├── training/           # 训练相关功能
+    │   └── trainer.py      # 训练器
+    └── utils/              # 工具函数
+        ├── map_loader.py   # 地图加载器
+        └── visualizer.py   # 可视化工具
 ```
 
-## 环境要求
+## 主要参数配置
 
-- Python 3.7+
-- PyTorch
-- NumPy
-- Matplotlib
-- Pillow
+主要配置参数位于 `src/config.py` 文件中，可以根据需要进行调整：
 
-## 安装依赖
-
-```bash
-pip install -r requirements.txt
-```
-
-## 使用方法
-
-### 1. 查看可用地图
-
-```bash
-python main.py list_maps
-```
-
-### 2. 训练机器人
-
-基本训练命令：
-```bash
-python main.py train --map maps/your_map.png --episodes 500
-```
-
-参数说明：
-- `--map`: 指定训练地图（默认为 maps/map.png）
-- `--episodes`: 训练回合数（默认为500）
-
-### 3. 测试机器人
-
-基本测试命令：
-```bash
-python main.py test --map maps/your_map.png
-```
-
-保存测试视频：
-```bash
-python main.py test --map maps/your_map.png --save-video
-```
-
-参数说明：
-- `--map`: 指定测试地图（默认为 maps/map.png）
-- `--save-video`: 可选参数，保存测试过程为GIF视频
-
-## 测试样例
-
-### 样例1：使用默认地图测试
-```bash
-# 使用默认10x10地图训练
-python main.py train --episodes 500
-
-# 使用默认地图测试并保存视频
-python main.py test --save-video
-```
-
-### 样例2：使用自定义地图
-```bash
-# 假设maps目录下有room.png地图
-# 训练
-python main.py train --map maps/room.png --episodes 1000
-
-# 测试并保存视频
-python main.py test --map maps/room.png --save-video
-```
-
-### 样例3：完整训练测试流程
-```bash
-# 1. 查看可用地图
-python main.py list_maps
-
-# 2. 选择地图进行训练（例如：room.png）
-python main.py train --map maps/room.png --episodes 1000
-
-# 3. 测试训练好的模型
-python main.py test --map maps/room.png --save-video
-```
+- `DEFAULT_MAP_SIZE`: 默认地图大小
+- `MAX_STEPS_FACTOR`: 最大步数因子（可达区域数量 * 因子）
+- `EPSILON_START`: 初始探索率
+- `EPSILON_MIN`: 最小探索率
+- `EPSILON_DECAY`: 探索率衰减
 
 ## 注意事项
 
